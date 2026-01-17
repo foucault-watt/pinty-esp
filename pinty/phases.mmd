@@ -1,0 +1,47 @@
+flowchart TD
+  Boot[Boot ESP32] --> InitSerial[Initialiser Serial]
+  InitSerial --> InitOLED[Initialiser OLED]
+  InitOLED --> LoadPrefs["Charger Preferences (ssid, pass, kfactor)"]
+  LoadPrefs --> HasSSID{SSID connu?}
+  
+  HasSSID -- oui --> Connect[Tentative de connexion WiFi]
+  HasSSID -- non --> StartAP[Demarrer AP Pinty]
+  
+  Connect -- succes --> NormalMode[Mode Normal]
+  Connect -- echec --> StartAP
+
+  StartAP --> APWait["Serveur config (/ , /save , /reset)"]
+  APWait --> Save{Form soumis?}
+  Save -- save --> Restart[Enregistrer prefs & restart]
+  Save -- reset --> ResetTotal[Remet totalLitres a 0]
+
+  NormalMode --> AttachInt[Attach interruption capteur]
+  AttachInt --> Loop[Loop principal]
+
+  subgraph LoopCycle [Boucle principale]
+    Loop --> EverySecond[Chaque seconde: calcul debit & total]
+    EverySecond --> UpdateOLED["MAJ ecran: wifi, api, buffer, debit, total"]
+    EverySecond --> BufferIfOffline{Wifi connecte?}
+    BufferIfOffline -- non --> AddBuffer[Ajouter datapoint au buffer]
+    BufferIfOffline -- oui --> NoBuffer[Pas de buffer]
+    Loop --> PeriodicSend[Si sendInterval ecoule -> envoi]
+    PeriodicSend --> SendDecision{Buffer présent?}
+    SendDecision -- oui --> SendBuffer[POST batch -> vider buffer si OK]
+    SendDecision -- non --> SendNow[POST courant -> set sendStatus OK/ERR]
+  end
+
+  Loop --> ReconnectTimer[Tenter reconnexion toutes les reconnectInterval]
+  ReconnectTimer --> TryReconnect{Reconnect success?}
+  TryReconnect -- oui --> OnReconnect[Wifi OK -> envoyer buffer si présent]
+  TryReconnect -- non --> KeepAP[Conserver AP actif; continuer tentatives]
+
+  SendNow --> UpdateStatus[sendStatus = OK/ERR/PENDING/WAIT]
+  SendBuffer --> UpdateStatus2[sendStatus = OK/ERR]
+  AddBuffer --> UpdateStatus3[API: WAIT en attente de réseau]
+
+  ResetTotal --> UpdateOLED
+  Restart --> Boot
+
+  style StartAP fill:#f9f,stroke:#333,stroke-width:1px
+  style NormalMode fill:#9f9,stroke:#333,stroke-width:1px
+  style LoopCycle fill:#eef,stroke:#333,stroke-width:1px
