@@ -1,47 +1,50 @@
 flowchart TD
   Boot[Boot ESP32] --> InitSerial[Initialiser Serial]
   InitSerial --> InitOLED[Initialiser OLED]
-  InitOLED --> LoadPrefs["Charger Preferences (ssid, pass, kfactor)"]
+  InitOLED --> LoadPrefs["Charger Preferences (ssid, pass, kfactor, mqtt)"]
   LoadPrefs --> HasSSID{SSID connu?}
   
   HasSSID -- oui --> Connect[Tentative de connexion WiFi]
   HasSSID -- non --> StartAP[Demarrer AP Pinty]
   
-  Connect -- succes --> NormalMode[Mode Normal]
+  Connect -- succes --> ConnectMQTT[Connexion MQTT TLS 8883]
   Connect -- echec --> StartAP
+
+  ConnectMQTT -- succes --> NormalMode[Mode Normal MQTT]
+  ConnectMQTT -- echec --> RetryMQTT[Retry MQTT toutes les 5s]
 
   StartAP --> APWait["Serveur config (/ , /save , /reset)"]
   APWait --> Save{Form soumis?}
   Save -- save --> Restart[Enregistrer prefs & restart]
   Save -- reset --> ResetTotal[Remet totalLitres a 0]
 
-  NormalMode --> AttachInt[Attach interruption capteur]
+  NormalMode --> SubscribeTopics[Subscribe pinty/dev01/cmd]
+  SubscribeTopics --> AttachInt[Attach interruption capteur]
   AttachInt --> Loop[Loop principal]
 
   subgraph LoopCycle [Boucle principale]
-    Loop --> EverySecond[Chaque seconde: calcul debit & total]
-    EverySecond --> UpdateOLED["MAJ ecran: wifi, api, buffer, debit, total"]
-    EverySecond --> BufferIfOffline{Wifi connecte?}
+    Loop --> MQTTLoop[client.loop - Ecoute commandes]
+    MQTTLoop --> EverySecond[Chaque seconde: calcul debit & total]
+    EverySecond --> UpdateOLED["MAJ ecran: wifi, mqtt, buffer, debit, total"]
+    EverySecond --> BufferIfOffline{MQTT connecte?}
     BufferIfOffline -- non --> AddBuffer[Ajouter datapoint au buffer]
-    BufferIfOffline -- oui --> NoBuffer[Pas de buffer]
-    Loop --> PeriodicSend[Si sendInterval ecoule -> envoi]
-    PeriodicSend --> SendDecision{Buffer présent?}
-    SendDecision -- oui --> SendBuffer[POST batch -> vider buffer si OK]
-    SendDecision -- non --> SendNow[POST courant -> set sendStatus OK/ERR]
+    BufferIfOffline -- oui --> PublishDirect[PUBLISH flow + total]
+    Loop --> CheckBuffer[Si buffer présent et MQTT OK]
+    CheckBuffer --> SendBatch[PUBLISH batch -> vider buffer]
   end
 
-  Loop --> ReconnectTimer[Tenter reconnexion toutes les reconnectInterval]
-  ReconnectTimer --> TryReconnect{Reconnect success?}
-  TryReconnect -- oui --> OnReconnect[Wifi OK -> envoyer buffer si présent]
-  TryReconnect -- non --> KeepAP[Conserver AP actif; continuer tentatives]
+  Loop --> ReconnectCheck[Verifier connexion MQTT]
+  ReconnectCheck --> MQTTDown{Déconnecté?}
+  MQTTDown -- oui --> ReconnectMQTT[Tentative reconnexion immediate]
+  MQTTDown -- non --> Continue[Continuer loop]
 
-  SendNow --> UpdateStatus[sendStatus = OK/ERR/PENDING/WAIT]
-  SendBuffer --> UpdateStatus2[sendStatus = OK/ERR]
-  AddBuffer --> UpdateStatus3[API: WAIT en attente de réseau]
+  PublishDirect --> UpdateStatus[mqttStatus = OK/ERR]
+  SendBatch --> UpdateStatus2[mqttStatus = SYNC/ERR]
+  AddBuffer --> UpdateStatus3[MQTT: WAIT buffer actif]
 
   ResetTotal --> UpdateOLED
   Restart --> Boot
 
   style StartAP fill:#f9f,stroke:#333,stroke-width:1px
   style NormalMode fill:#9f9,stroke:#333,stroke-width:1px
-  style LoopCycle fill:#eef,stroke:#333,stroke-width:1px
+  style LoopCycle fill:#eef,stroke:#333,stroke-width:1px  style ConnectMQTT fill:#9cf,stroke:#333,stroke-width:2px
